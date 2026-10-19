@@ -5372,6 +5372,70 @@ mod test {
         });
     }
 
+    #[test]
+    fn test_emergency_withdraw_preserves_accounting_identity_and_clears_funders() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, token_address, token_admin) = setup(&env);
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let sponsor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let hunty_core = env.register(MockHuntyCore, ());
+
+        mint_tokens(&env, &token_address, &token_admin, &creator, 100_000_000);
+        mint_tokens(&env, &token_address, &token_admin, &sponsor, 100_000_000);
+
+        env.as_contract(&contract_id, || {
+            init_and_create_pool(
+                &env,
+                admin.clone(),
+                &token_address,
+                &hunty_core,
+                creator.clone(),
+                1,
+            );
+            RewardManager::fund_reward_pool(env.clone(), creator.clone(), 1, 60_000_000).unwrap();
+            RewardManager::fund_reward_pool(env.clone(), sponsor.clone(), 1, 40_000_000).unwrap();
+            let reason = soroban_sdk::String::from_str(&env, "Emergency withdrawal");
+            RewardManager::pause(env.clone(), admin.clone(), reason.clone()).unwrap();
+
+            assert_eq!(
+                RewardManager::emergency_withdraw(
+                    env.clone(),
+                    admin.clone(),
+                    1,
+                    recipient.clone(),
+                    reason,
+                    1,
+                ),
+                Ok(100_000_000)
+            );
+
+            let pool = RewardManager::get_reward_pool(env.clone(), 1).unwrap();
+            assert_eq!(pool.balance, 0);
+            assert_eq!(pool.total_refunded, 100_000_000);
+            assert_eq!(
+                pool.total_deposited,
+                pool.balance
+                    + pool.total_distributed
+                    + pool.total_refunded
+                    + pool.total_migrated_out
+            );
+            assert_eq!(RewardManager::get_pool_funders(env.clone(), 1), Vec::new(&env));
+            assert_eq!(
+                RewardManager::get_pool_funder_contribution(env.clone(), 1, creator.clone()),
+                0
+            );
+            assert_eq!(
+                RewardManager::get_pool_funder_contribution(env.clone(), 1, sponsor.clone()),
+                0
+            );
+        });
+
+        assert_eq!(get_balance(&env, &token_address, &recipient), 100_000_000);
+    }
+
     /// Verifies that add_authorized_contract requires authorization from the admin.
     #[test]
     fn test_add_authorized_contract_requires_authorization() {

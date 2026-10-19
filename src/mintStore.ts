@@ -1,5 +1,6 @@
 import { createClient, RedisClientType } from 'redis';
 import { randomUUID } from 'crypto';
+import { RateLimitConfig, RateLimitConfigUpdate } from './types';
 
 export type TryRecordResult =
   | { allowed: true; count: number }
@@ -22,12 +23,33 @@ export interface MintRecordStore {
     cutoff: number,
     maxMints: number,
   ): Promise<TryRecordResult>;
+  getRateLimitConfig(): Promise<RateLimitConfig | null>;
+  initializeRateLimitConfig(config: RateLimitConfig): Promise<RateLimitConfig>;
+  updateRateLimitConfig(update: RateLimitConfigUpdate): Promise<RateLimitConfig>;
   close?(): Promise<void>;
 }
 
 /** In-memory store for unit tests only — not safe for multi-instance deploys. */
 export class MemoryMintStore implements MintRecordStore {
   private records = new Map<string, number[]>();
+  private rateLimitConfig: RateLimitConfig | null = null;
+
+  async getRateLimitConfig(): Promise<RateLimitConfig | null> {
+    return this.rateLimitConfig ? { ...this.rateLimitConfig } : null;
+  }
+
+  async initializeRateLimitConfig(config: RateLimitConfig): Promise<RateLimitConfig> {
+    this.rateLimitConfig ??= { ...config };
+    return { ...this.rateLimitConfig };
+  }
+
+  async updateRateLimitConfig(update: RateLimitConfigUpdate): Promise<RateLimitConfig> {
+    if (!this.rateLimitConfig) {
+      throw new Error('Rate limit config has not been initialized');
+    }
+    this.rateLimitConfig = { ...this.rateLimitConfig, ...update };
+    return { ...this.rateLimitConfig };
+  }
 
   async getRecent(address: string, cutoff: number): Promise<number[]> {
     const timestamps = this.records.get(address) ?? [];
@@ -53,6 +75,25 @@ export class MemoryMintStore implements MintRecordStore {
 }
 
 const KEY_PREFIX = 'mint:ratelimit:';
+const CONFIG_KEY = `${KEY_PREFIX}config`;
+
+export const UPDATE_CONFIG_LUA = `
+local config = cjson.decode(redis.call('GET', KEYS[1]))
+local update = cjson.decode(ARGV[1])
+if update.maxMints ~= nil then config.maxMints = update.maxMints end
+if update.windowMs ~= nil then config.windowMs = update.windowMs end
+local encoded = cjson.encode(config)
+redis.call('SET', KEYS[1], encoded)
+return encoded
+`;
+
+function parseRateLimitConfig(value: string): RateLimitConfig {
+  const parsed = JSON.parse(value) as Partial<RateLimitConfig>;
+  if (!Number.isInteger(parsed.maxMints) || !Number.isInteger(parsed.windowMs)) {
+    throw new Error('Stored rate limit config is invalid');
+  }
+  return { maxMints: parsed.maxMints!, windowMs: parsed.windowMs! };
+}
 
 export const TRY_RECORD_LUA = `
 redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
@@ -90,6 +131,34 @@ export class RedisMintStore implements MintRecordStore {
 
   private key(address: string): string {
     return `${KEY_PREFIX}${address}`;
+  }
+
+  async getRateLimitConfig(): Promise<RateLimitConfig | null> {
+    await this.ensureConnected();
+    const value = await this.client.get(CONFIG_KEY);
+    return value === null ? null : parseRateLimitConfig(value);
+  }
+
+  async initializeRateLimitConfig(config: RateLimitConfig): Promise<RateLimitConfig> {
+    await this.ensureConnected();
+    await this.client.set(CONFIG_KEY, JSON.stringify(config), { NX: true });
+    const stored = await this.client.get(CONFIG_KEY);
+    if (stored === null) {
+      throw new Error('Failed to initialize rate limit config');
+    }
+    return parseRateLimitConfig(stored);
+  }
+
+  async updateRateLimitConfig(update: RateLimitConfigUpdate): Promise<RateLimitConfig> {
+    await this.ensureConnected();
+    const value = await this.client.eval(UPDATE_CONFIG_LUA, {
+      keys: [CONFIG_KEY],
+      arguments: [JSON.stringify(update)],
+    });
+    if (typeof value !== 'string') {
+      throw new Error('Rate limit config has not been initialized');
+    }
+    return parseRateLimitConfig(value);
   }
 
   async getRecent(address: string, cutoff: number): Promise<number[]> {

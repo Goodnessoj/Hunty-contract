@@ -158,10 +158,25 @@ impl NftReward {
     }
 
     pub fn set_reward_manager(
-        _env: Env,
-        _admin: Address,
-        _reward_manager: Address,
+        env: Env,
+        admin: Address,
+        reward_manager: Address,
     ) -> Result<(), NftErrorCode> {
+        admin.require_auth();
+        let stored_admin = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&symbol_short!("ADMIN"))
+            .ok_or(NftErrorCode::NotInitialized)?;
+        if admin != stored_admin {
+            return Err(NftErrorCode::Unauthorized);
+        }
+
+        env.storage()
+            .instance()
+            .set(&Self::MINTER_KEY, &reward_manager);
+        env.events()
+            .publish((symbol_short!("RWD_MGR"), admin), reward_manager);
         Ok(())
     }
 
@@ -474,5 +489,53 @@ mod tests {
                 .unwrap(),
             1
         );
+    }
+
+    #[test]
+    fn set_reward_manager_updates_minter_and_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1000);
+
+        let (client, original_minter, admin) = deploy(&env);
+        let reward_manager = Address::generate(&env);
+        let owner = Address::generate(&env);
+
+        client
+            .set_reward_manager(&admin, &reward_manager)
+            .unwrap();
+
+        assert_eq!(
+            client.mint_reward_nft(&original_minter, &1, &owner, &nft_metadata(&env)),
+            Err(NftErrorCode::Unauthorized)
+        );
+        assert_eq!(
+            client.mint_reward_nft(&reward_manager, &1, &owner, &nft_metadata(&env)),
+            Ok(1)
+        );
+        assert_eq!(env.events().all().events().len(), 1);
+    }
+
+    #[test]
+    fn set_reward_manager_rejects_non_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _, _) = deploy(&env);
+        let attacker = Address::generate(&env);
+        let reward_manager = Address::generate(&env);
+
+        assert!(client
+            .try_set_reward_manager(&attacker, &reward_manager)
+            .is_err());
+    }
+
+    #[test]
+    #[should_panic]
+    fn set_reward_manager_requires_admin_auth() {
+        let env = Env::default();
+        let (client, _, admin) = deploy(&env);
+        let reward_manager = Address::generate(&env);
+
+        client.set_reward_manager(&admin, &reward_manager);
     }
 }
