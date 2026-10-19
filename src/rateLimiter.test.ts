@@ -105,50 +105,50 @@ describe('MintRateLimiter', () => {
   });
 
   describe('admin config', () => {
-    it('returns current config', () => {
-      expect(limiter.getConfig()).toEqual({ maxMints: 3, windowMs: 60_000 });
+    it('returns current config', async () => {
+      expect(await limiter.getConfig()).toEqual({ maxMints: 3, windowMs: 60_000 });
     });
 
-    it('updates maxMints', () => {
-      limiter.updateConfig({ maxMints: 5 }, 'secret');
-      expect(limiter.getConfig().maxMints).toBe(5);
+    it('updates maxMints', async () => {
+      await limiter.updateConfig({ maxMints: 5 }, 'secret');
+      expect((await limiter.getConfig()).maxMints).toBe(5);
     });
 
-    it('updates windowMs', () => {
-      limiter.updateConfig({ windowMs: 120_000 }, 'secret');
-      expect(limiter.getConfig().windowMs).toBe(120_000);
+    it('updates windowMs', async () => {
+      await limiter.updateConfig({ windowMs: 120_000 }, 'secret');
+      expect((await limiter.getConfig()).windowMs).toBe(120_000);
     });
 
-    it('rejects unauthorized updates', () => {
-      expect(() => limiter.updateConfig({ maxMints: 5 }, 'wrong-secret')).toThrow('Unauthorized');
+    it('rejects unauthorized updates', async () => {
+      await expect(limiter.updateConfig({ maxMints: 5 }, 'wrong-secret')).rejects.toThrow('Unauthorized');
     });
 
-    it('rejects invalid maxMints', () => {
-      expect(() => limiter.updateConfig({ maxMints: 0 }, 'secret')).toThrow('maxMints must be at least 1');
+    it('rejects invalid maxMints', async () => {
+      await expect(limiter.updateConfig({ maxMints: 0 }, 'secret')).rejects.toThrow('maxMints must be at least 1');
     });
 
-    it('rejects invalid windowMs', () => {
-      expect(() => limiter.updateConfig({ windowMs: 500 }, 'secret')).toThrow('windowMs must be at least 1000');
+    it('rejects invalid windowMs', async () => {
+      await expect(limiter.updateConfig({ windowMs: 500 }, 'secret')).rejects.toThrow('windowMs must be at least 1000');
     });
 
-    it('rejects non-integer, string and NaN values', () => {
-      expect(() => limiter.updateConfig({ maxMints: '5' as unknown as number }, 'secret')).toThrow('maxMints');
-      expect(() => limiter.updateConfig({ maxMints: 2.5 }, 'secret')).toThrow('maxMints');
-      expect(() => limiter.updateConfig({ maxMints: NaN }, 'secret')).toThrow('maxMints');
-      expect(() => limiter.updateConfig({ windowMs: 'abc' as unknown as number }, 'secret')).toThrow('windowMs');
-      expect(() => limiter.updateConfig({ windowMs: 1.5 }, 'secret')).toThrow('windowMs');
-      expect(() => limiter.updateConfig({ windowMs: NaN }, 'secret')).toThrow('windowMs');
+    it('rejects non-integer, string and NaN values', async () => {
+      await expect(limiter.updateConfig({ maxMints: '5' as unknown as number }, 'secret')).rejects.toThrow('maxMints');
+      await expect(limiter.updateConfig({ maxMints: 2.5 }, 'secret')).rejects.toThrow('maxMints');
+      await expect(limiter.updateConfig({ maxMints: NaN }, 'secret')).rejects.toThrow('maxMints');
+      await expect(limiter.updateConfig({ windowMs: 'abc' as unknown as number }, 'secret')).rejects.toThrow('windowMs');
+      await expect(limiter.updateConfig({ windowMs: 1.5 }, 'secret')).rejects.toThrow('windowMs');
+      await expect(limiter.updateConfig({ windowMs: NaN }, 'secret')).rejects.toThrow('windowMs');
     });
 
-    it('rejects values above the upper bound', () => {
-      expect(() => limiter.updateConfig({ maxMints: 10_001 }, 'secret')).toThrow('maxMints');
-      expect(() => limiter.updateConfig({ windowMs: 86_400_001 }, 'secret')).toThrow('windowMs');
+    it('rejects values above the upper bound', async () => {
+      await expect(limiter.updateConfig({ maxMints: 10_001 }, 'secret')).rejects.toThrow('maxMints');
+      await expect(limiter.updateConfig({ windowMs: 86_400_001 }, 'secret')).rejects.toThrow('windowMs');
     });
 
-    it('rejects unknown keys', () => {
-      expect(() =>
+    it('rejects unknown keys', async () => {
+      await expect(
         limiter.updateConfig({ maxMints: 5, bogus: 1 } as unknown as { maxMints: number }, 'secret'),
-      ).toThrow('Unknown config key');
+      ).rejects.toThrow('Unknown config key');
     });
 
     it('applies updated limits immediately', async () => {
@@ -156,8 +156,20 @@ describe('MintRateLimiter', () => {
       await limiter.mint('addr1');
       await limiter.mint('addr1');
       await expect(limiter.mint('addr1')).rejects.toThrow(MintRateLimitError);
-      limiter.updateConfig({ maxMints: 5 }, 'secret');
+      await limiter.updateConfig({ maxMints: 5 }, 'secret');
       await expect(limiter.mint('addr1')).resolves.toBeUndefined();
+    });
+
+    it('shares updates across instances and preserves them after limiter recreation', async () => {
+      const shared = new MemoryMintStore();
+      const first = new MintRateLimiter({ maxMints: 2, windowMs: 60_000 }, 'secret', shared);
+      const second = new MintRateLimiter({ maxMints: 3, windowMs: 120_000 }, 'secret', shared);
+
+      await first.updateConfig({ maxMints: 5 }, 'secret');
+      expect(await second.getConfig()).toEqual({ maxMints: 5, windowMs: 60_000 });
+
+      const restarted = new MintRateLimiter({ maxMints: 3, windowMs: 120_000 }, 'secret', shared);
+      expect(await restarted.getConfig()).toEqual({ maxMints: 5, windowMs: 60_000 });
     });
   });
 

@@ -3997,6 +3997,9 @@ impl RewardManager {
                     client.transfer(&contract_addr, &recipient, &balance);
                 }
                 Storage::set_pool_balance(&env, hunt_id, 0);
+                let prior_refunded = Storage::get_pool_total_refunded(&env, hunt_id);
+                Storage::set_pool_total_refunded(&env, hunt_id, prior_refunded + balance);
+                Self::clear_pool_funders(&env, hunt_id);
                 total_withdrawn = balance;
                 let timestamp = env.ledger().timestamp();
                 let log_entry = EmergencyWithdrawalLogEntry {
@@ -4039,6 +4042,9 @@ impl RewardManager {
                         client.transfer(&contract_addr, &recipient, &balance);
                     }
                     Storage::set_pool_balance(&env, pid, 0);
+                    let prior_refunded = Storage::get_pool_total_refunded(&env, pid);
+                    Storage::set_pool_total_refunded(&env, pid, prior_refunded + balance);
+                    Self::clear_pool_funders(&env, pid);
                     total_withdrawn += balance;
                     let timestamp = env.ledger().timestamp();
                     let log_entry = EmergencyWithdrawalLogEntry {

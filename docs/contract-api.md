@@ -6501,14 +6501,17 @@ pub fn initialize_admin(_env: Env, _admin: Address) -> Result<(), NftErrorCode>
 **Signature:**
 
 ```rust
-pub fn set_reward_manager(_env: Env, _admin: Address, _reward_manager: Address) -> Result<(), NftErrorCode>
+pub fn set_reward_manager(env: Env, admin: Address, reward_manager: Address) -> Result<(), NftErrorCode>
 ```
+
+Requires authorization from the stored contract admin, updates the authorized NFT minter
+to `reward_manager`, and emits a `RWD_MGR` event.
 
 **Parameters:**
 
-- `_env: Env`
-- `_admin: Address`
-- `_reward_manager: Address`
+- `env: Env`
+- `admin: Address`
+- `reward_manager: Address`
 
 **Returns:** `Result<(), NftErrorCode>`
 

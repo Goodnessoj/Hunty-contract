@@ -290,7 +290,7 @@ Hunty consists of three main smart contracts and an off-chain rate-limiting micr
 1. **HuntyCore** - Main game logic, hunt management, and clue verification
 2. **RewardManager** - Coordinates reward distribution (XLM and NFT)
 3. **NftReward** - Handles NFT minting and transfer for completion rewards
-4. **Off-Chain Mint Rate Limiter** (`src/`) - Express microservice protecting the NFT minting path against per-address abuse and spam
+4. **Off-Chain Mint Rate Limiter** (`src/`) - Express microservice that reserves per-address rate-limit slots; it does not submit NFT mint transactions
 
 ### Contract Responsibilities
 
@@ -315,11 +315,12 @@ Hunty consists of three main smart contracts and an off-chain rate-limiting micr
 - Provides query functions for NFT information
 
 **Off-Chain Mint Rate Limiter Microservice (`src/`):**
-- Serves as an off-chain API layer (`hunty-mint-rate-limiter`) sitting in front of the on-chain NFT reward minting pipeline.
-- Enforces sliding-window rate limits per Stellar wallet address (`maxMints` per `windowMs`) to prevent automated minting abuse, bot spam, and gas exhaustion on the network.
+- Serves as an off-chain API layer (`hunty-mint-rate-limiter`) for reserving rate-limit slots by Stellar wallet address.
+- Enforces sliding-window rate limits (`maxMints` per `windowMs`) to limit how often an address can reserve a slot.
+- Does not call the Soroban RPC, submit a transaction, or mint an NFT. A successful reservation is not evidence that a mint occurred.
 - Exposes administrative and operational endpoints:
-  - `POST /mint` - Evaluates rate limits for a given player address `{ address }` before initiating the Soroban `NftReward` mint.
-  - `GET /mint/count/:address` - Returns active window mint count for an address.
+  - `POST /mint/reserve` - Reserves a rate-limit slot for `{ address }`; returns `{ reserved: true, reservationsInWindow }`, not a mint result or transaction hash.
+  - `GET /mint/count/:address` - Returns the number of rate-limit reservations in the active window for an address.
   - `GET /health` - Health check returning service status, network environment, RPC endpoint, and contract IDs (`huntyCoreId`, `rewardManagerId`, `nftRewardId`).
   - `GET /environment` - Renders visual environment badge for non-production environments (`testnet`, `staging`).
   - `GET /admin/config` & `PATCH /admin/config` - Query and dynamically update rate limit settings at runtime (requires `x-admin-secret` authentication header).
@@ -373,7 +374,7 @@ The working files (`.env`, `.env.testnet`, `.env.staging`, `.env.mainnet`, and a
 
 Required variables are validated when the API starts. Startup fails fast with a clear error if a value is missing, invalid, or still contains a `replace-with-...` placeholder.
 
-The mint rate-limiter API (`src/rateLimiter.ts`) **gates minting with shared Redis state** (`REDIS_URL`). Per-address mint timestamps are stored in Redis so limits survive process restarts and stay correct when multiple API instances run behind a load balancer. An in-memory `Map` is only used inside unit tests.
+The rate-limiter API (`src/rateLimiter.ts`) records per-address reservation timestamps in shared Redis state (`REDIS_URL`) so limits survive process restarts and stay correct when multiple API instances run behind a load balancer. A reservation does not submit an NFT mint transaction. An in-memory `Map` is only used inside unit tests.
 
 ```bash
 # Development/testnet
