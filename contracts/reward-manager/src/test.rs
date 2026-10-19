@@ -3061,6 +3061,60 @@ mod test {
     }
 
     #[test]
+    fn test_proportional_distributions_use_original_pool_balance() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, token_address, token_admin) = setup(&env);
+        let creator = Address::generate(&env);
+        let first_player = Address::generate(&env);
+        let second_player = Address::generate(&env);
+
+        mint_tokens(&env, &token_address, &token_admin, &contract_id, 100);
+
+        env.as_contract(&contract_id, || {
+            let mut config = seed_pool_config(&env, 42, creator, token_address.clone());
+            config.distribution_mode = DistributionMode::Proportional;
+            Storage::set_pool_config(&env, 42, &config);
+            Storage::set_pool_balance(&env, 42, 100);
+
+            let first_caller = Address::generate(&env);
+            Storage::add_authorized_contract(&env, &first_caller);
+            assert_eq!(
+                RewardManager::distribute_proportional(
+                    env.clone(),
+                    first_caller,
+                    42,
+                    first_player.clone(),
+                    50,
+                    100,
+                )
+                .unwrap(),
+                50
+            );
+
+            let second_caller = Address::generate(&env);
+            Storage::add_authorized_contract(&env, &second_caller);
+            assert_eq!(
+                RewardManager::distribute_proportional(
+                    env.clone(),
+                    second_caller,
+                    42,
+                    second_player.clone(),
+                    50,
+                    100,
+                )
+                .unwrap(),
+                50
+            );
+
+            assert_eq!(RewardManager::get_pool_balance(env.clone(), 42), 0);
+        });
+
+        assert_eq!(get_balance(&env, &token_address, &first_player), 50);
+        assert_eq!(get_balance(&env, &token_address, &second_player), 50);
+    }
+
+    #[test]
     fn test_refund_pool_unauthorized_fails() {
         let env = Env::default();
         env.mock_all_auths_allowing_non_root_auth();

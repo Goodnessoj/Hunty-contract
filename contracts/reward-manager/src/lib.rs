@@ -64,33 +64,9 @@ pub struct RewardManager;
 
 /// Prevents concurrent distribution executions within a single transaction.
 ///
-/// This guard sets a persistent storage flag when acquired and clears it when dropped.
-/// It provides protection against accidental reentrancy from cross-contract calls.
-///
-/// # Important: Limitations Under Panic=Abort
-///
-/// The Cargo.toml release profile sets `panic = "abort"`, which means no unwinding occurs
-/// when a panic is triggered. In this configuration, Drop destructors do NOT run, and the
-/// flag will remain set (true) indefinitely. This creates a permanent state:
-/// - Any panic between ReentrancyGuard::acquire() and the end of distribute_rewards
-///   (e.g., in token client, NFT handler, or arithmetic overflow) will cause the flag
-///   to persist as true.
-/// - All subsequent distribution calls will immediately fail with ReentrancyDetected.
-/// - There is no admin path to clear this flag once set.
-/// - The contract's core function is effectively disabled until the next ledger TTL expiration.
-///
-/// # Soroban Ledger TTL Behavior
-///
-/// However, Soroban's persistent storage uses a TTL (time-to-live) expiration model:
-/// - Entries that are not accessed within the TTL window are automatically garbage collected.
-/// - When the flag expires, the contract can resume normal operation.
-/// - This provides eventual recovery without manual intervention.
-///
-/// To minimize risk of extended outage:
-/// - Test thoroughly to prevent panics in the critical path.
-/// - Keep calls to external contracts (token, NFT) as simple as possible.
-/// - Monitor the ReentrancyDetected error rate in production metrics.
-/// - Be prepared to document the TTL expiration timeline if this occurs.
+/// This guard sets an instance-storage flag when acquired and clears it when dropped.
+/// The flag is only needed during the invocation. If an invocation fails or panics,
+/// Soroban rolls back its storage writes, so the flag cannot remain set after failure.
 struct ReentrancyGuard {
     env: Env,
 }
@@ -1356,6 +1332,9 @@ impl RewardManager {
 
         // Check for overflow before adding to pool balance
         let current = Storage::get_pool_balance(&env, hunt_id);
+        if current == 0 {
+            Storage::clear_proportional_balance(&env, hunt_id);
+        }
         let new_balance = current
             .checked_add(amount)
             .ok_or(RewardErrorCode::PoolBalanceOverflow)?;
@@ -1470,6 +1449,9 @@ impl RewardManager {
         if creator != pool_config.creator {
             return Err(RewardErrorCode::Unauthorized);
         }
+        if pool_config.frozen {
+            return Err(RewardErrorCode::PoolFrozen);
+        }
 
         // Verify the hunt is in a terminal state (Completed, Cancelled,
         // EmergencyStopped, or Archived; see `is_hunt_terminal`). An Active hunt
@@ -1487,7 +1469,9 @@ impl RewardManager {
         }
 
         let balance = Storage::get_pool_balance(&env, hunt_id);
-        if balance == 0 {
+        let reserved = Storage::get_reserved_reward_total(&env, hunt_id);
+        let refund_amount = balance.saturating_sub(reserved);
+        if refund_amount == 0 {
             return Ok(());
         }
 
@@ -1503,13 +1487,13 @@ impl RewardManager {
             // No sponsorship ledger for this pool (e.g. balance arrived solely
             // through a path that predates funder tracking) — the creator is
             // the only possible owner of the balance.
-            client.transfer(&contract_addr, &creator, &balance);
+            client.transfer(&contract_addr, &creator, &refund_amount);
             env.events().publish(
                 (symbol_short!("POOL_RFD"), hunt_id),
                 PoolRefundedEvent {
                     hunt_id,
                     funder: creator.clone(),
-                    amount: balance,
+                    amount: refund_amount,
                 },
             );
         } else {
@@ -1520,7 +1504,7 @@ impl RewardManager {
             }
 
             let last_index = funders.len() - 1;
-            let mut remaining = balance;
+            let mut remaining = refund_amount;
             for i in 0..funders.len() {
                 let funder = funders.get(i).unwrap();
                 let contribution = Storage::get_pool_funder_contribution(&env, hunt_id, &funder);
@@ -1532,7 +1516,7 @@ impl RewardManager {
                 let share = if i == last_index {
                     remaining
                 } else if total_contributed > 0 {
-                    (balance.saturating_mul(contribution) / total_contributed).min(remaining)
+                    (refund_amount.saturating_mul(contribution) / total_contributed).min(remaining)
                 } else {
                     0
                 };
@@ -1553,13 +1537,13 @@ impl RewardManager {
             Self::clear_pool_funders(&env, hunt_id);
         }
 
-        Storage::set_pool_balance(&env, hunt_id, 0);
+        Storage::set_pool_balance(&env, hunt_id, balance - refund_amount);
 
         // Track total refunded for accounting. This is the sum of every
         // PoolRefundedEvent emitted above (or the single creator payout in
         // the no-sponsors branch), so it still equals the full balance even
         // when it was split across multiple funders.
-        let total_refunded = Storage::get_pool_total_refunded(&env, hunt_id) + balance;
+        let total_refunded = Storage::get_pool_total_refunded(&env, hunt_id) + refund_amount;
         Storage::set_pool_total_refunded(&env, hunt_id, total_refunded);
 
         let audit_entry = PoolAuditEntry {
@@ -1639,6 +1623,9 @@ impl RewardManager {
         if creator != source_config.creator {
             return Err(RewardErrorCode::Unauthorized);
         }
+        if source_config.frozen {
+            return Err(RewardErrorCode::PoolFrozen);
+        }
 
         // Destination pool must exist and be owned by the same creator.
         let dest_config = Storage::get_pool_config(&env, dest_hunt_id)
@@ -1659,7 +1646,9 @@ impl RewardManager {
             return Err(RewardErrorCode::SourcePoolNotEligible);
         }
 
-        let amount = Storage::get_pool_balance(&env, source_hunt_id);
+        let source_balance = Storage::get_pool_balance(&env, source_hunt_id);
+        let reserved = Storage::get_reserved_reward_total(&env, source_hunt_id);
+        let amount = source_balance.saturating_sub(reserved);
         if amount <= 0 {
             return Err(RewardErrorCode::InvalidMigration);
         }
@@ -1685,7 +1674,7 @@ impl RewardManager {
         }
 
         // Re-key the balance: drain the source, credit the destination.
-        Storage::set_pool_balance(&env, source_hunt_id, 0);
+        Storage::set_pool_balance(&env, source_hunt_id, source_balance - amount);
         Storage::set_pool_balance(&env, dest_hunt_id, new_dest_balance);
 
         // Record the migrated amount on the source so the accounting identity
@@ -1805,6 +1794,49 @@ impl RewardManager {
     /// been refunded. 0 if they have never funded it or were already refunded.
     pub fn get_pool_funder_contribution(env: Env, hunt_id: u64, funder: Address) -> i128 {
         Storage::get_pool_funder_contribution(&env, hunt_id, &funder)
+    }
+
+    /// Returns the XLM amount reserved for an unpaid winner of a closed hunt.
+    pub fn get_reserved_reward(env: Env, hunt_id: u64, player: Address) -> i128 {
+        Storage::get_reserved_reward(&env, hunt_id, &player)
+    }
+
+    /// Returns pool balance not already reserved for unpaid winners.
+    pub fn get_available_pool_balance(env: Env, hunt_id: u64) -> i128 {
+        Storage::get_pool_balance(&env, hunt_id)
+            .saturating_sub(Storage::get_reserved_reward_total(&env, hunt_id))
+    }
+
+    /// Reserves XLM for a winner whose close-time distribution failed.
+    /// Only an authorized distributor (HuntyCore) may create reservations.
+    pub fn reserve_unpaid_reward(
+        env: Env,
+        caller: Address,
+        hunt_id: u64,
+        player: Address,
+        amount: i128,
+    ) -> Result<(), RewardErrorCode> {
+        Self::require_authorized_distributor(&env, &caller)?;
+        if amount <= 0 {
+            return Ok(());
+        }
+        if Storage::get_pool_config(&env, hunt_id).is_none() {
+            return Err(RewardErrorCode::PoolNotFound);
+        }
+
+        let current = Storage::get_reserved_reward(&env, hunt_id, &player);
+        if amount > current {
+            let total = Storage::get_reserved_reward_total(&env, hunt_id);
+            let updated_total = total
+                .checked_add(amount - current)
+                .ok_or(RewardErrorCode::PoolBalanceOverflow)?;
+            if updated_total > Storage::get_pool_balance(&env, hunt_id) {
+                return Err(RewardErrorCode::InsufficientPool);
+            }
+            Storage::set_reserved_reward_total(&env, hunt_id, updated_total);
+            Storage::set_reserved_reward(&env, hunt_id, &player, amount);
+        }
+        Ok(())
     }
 
     /// Returns comprehensive statistics for a reward pool.
@@ -2230,7 +2262,12 @@ impl RewardManager {
             let token_address = &pool_config.token_address;
 
             let pool_balance = Storage::get_pool_balance(&env, hunt_id);
-            if pool_balance < amount {
+            let reserved_total = Storage::get_reserved_reward_total(&env, hunt_id);
+            let player_reserved = Storage::get_reserved_reward(&env, hunt_id, &player_address);
+            let available = pool_balance
+                .saturating_sub(reserved_total)
+                .saturating_add(player_reserved);
+            if available < amount {
                 return Err(RewardErrorCode::InsufficientPool);
             }
 
@@ -2396,6 +2433,15 @@ impl RewardManager {
         }
 
         // Write distribution record after all checks and mutations have succeeded
+        let reserved = Storage::get_reserved_reward(&env, hunt_id, &player_address);
+        if reserved > 0 {
+            Storage::set_reserved_reward(&env, hunt_id, &player_address, 0);
+            Storage::set_reserved_reward_total(
+                &env,
+                hunt_id,
+                Storage::get_reserved_reward_total(&env, hunt_id) - reserved,
+            );
+        }
         Storage::set_distribution_record(
             &env,
             hunt_id,
@@ -2611,7 +2657,9 @@ impl RewardManager {
         for i in 0..hunt_xlm_totals.len() {
             let pair = hunt_xlm_totals.get(i).unwrap();
             let pool_balance = Storage::get_pool_balance(&env, pair.0);
-            if pool_balance < pair.1 {
+            let available = pool_balance
+                .saturating_sub(Storage::get_reserved_reward_total(&env, pair.0));
+            if available < pair.1 {
                 return Err(RewardErrorCode::InsufficientPool);
             }
         }
@@ -3064,7 +3112,8 @@ impl RewardManager {
 
     /// Distribute a proportional share of the pool based on player score.
     ///
-    /// Amount = floor((player_score / total_scores) * pool_balance).
+    /// Amount = floor((player_score / total_scores) * the balance available
+    /// when the first proportional claim is made).
     /// Remainder stays in the pool. Enforces min_distribution_amount when set.
     /// Requires the pool's distribution_mode to be Proportional (or will still
     /// compute proportionally when called via this entry point).
@@ -3093,12 +3142,18 @@ impl RewardManager {
         }
 
         let pool_balance = Storage::get_pool_balance(&env, hunt_id);
-        if pool_balance <= 0 {
+        let available_balance =
+            pool_balance.saturating_sub(Storage::get_reserved_reward_total(&env, hunt_id));
+        if available_balance <= 0 {
             return Err(RewardErrorCode::InsufficientPool);
         }
 
-        // floor((player_score / total_scores) * pool); remainder remains in pool
-        let amount = (pool_balance
+        let proportional_balance =
+            Storage::get_proportional_balance(&env, hunt_id).unwrap_or(available_balance);
+
+        // Keep the same pool basis for every claim; using the shrinking live
+        // balance would make payout amounts depend on claim order.
+        let amount = (proportional_balance
             .checked_mul(player_score as i128)
             .ok_or(RewardErrorCode::InvalidAmount)?)
             / (total_scores as i128);
@@ -3123,7 +3178,10 @@ impl RewardManager {
             completion_rank: 0,
         };
 
-        Self::distribute_rewards(env, caller, hunt_id, player, config)?;
+        Self::distribute_rewards(env.clone(), caller, hunt_id, player, config)?;
+        if Storage::get_proportional_balance(&env, hunt_id).is_none() {
+            Storage::set_proportional_balance(&env, hunt_id, proportional_balance);
+        }
         Ok(amount)
     }
 

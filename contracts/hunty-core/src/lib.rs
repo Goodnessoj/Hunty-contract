@@ -2151,9 +2151,21 @@ impl HuntyCore {
                 && progress.completion_rank > 0
                 && progress.completion_rank <= hunt.reward_config.max_winners
             {
+                let reward_amount = Self::resolve_reward_amount(&env, &hunt, &progress);
                 match Self::distribute_player_reward(&env, &mut hunt, &mut progress) {
                     Ok(()) => rewarded_players = rewarded_players.saturating_add(1),
-                    Err(_) => unpaid_players.push_back(progress.player.clone()),
+                    Err(_) => {
+                        if let Some(reward_manager) = Storage::get_reward_manager(&env) {
+                            Self::reserve_unpaid_reward(
+                                &env,
+                                &reward_manager,
+                                hunt_id,
+                                &progress.player,
+                                reward_amount,
+                            )?;
+                        }
+                        unpaid_players.push_back(progress.player.clone());
+                    }
                 }
             }
         }
@@ -2441,7 +2453,10 @@ impl HuntyCore {
         // #1100: Pause stops new play, not payouts. Completed players may still
         // claim while Paused. Cancelled pools are refunded; Draft/Completed/
         // Archived/EmergencyStopped hunts reject claims.
-        if hunt.status != HuntStatus::Active && hunt.status != HuntStatus::Paused {
+        if hunt.status != HuntStatus::Active
+            && hunt.status != HuntStatus::Paused
+            && hunt.status != HuntStatus::Completed
+        {
             return Err(HuntErrorCode::InvalidHuntStatus);
         }
 
@@ -2498,6 +2513,66 @@ impl HuntyCore {
     /// # Errors
     /// * `InvalidRarity` - The hunt's configured NFT rarity is out of range
     /// * `RewardDistributionFailed` - The RewardManager cross-contract call failed
+    fn reserve_unpaid_reward(
+        env: &Env,
+        reward_manager: &Address,
+        hunt_id: u64,
+        player: &Address,
+        amount: i128,
+    ) -> Result<(), HuntErrorCode> {
+        if amount <= 0 {
+            return Ok(());
+        }
+
+        let caller = env.current_contract_address();
+        let mut args: Vec<Val> = Vec::new(env);
+        args.push_back(caller.clone().into_val(env));
+        args.push_back(hunt_id.into_val(env));
+        args.push_back(player.clone().into_val(env));
+        args.push_back(amount.into_val(env));
+
+        env.authorize_as_current_contract(soroban_sdk::vec![
+            env,
+            InvokerContractAuthEntry::Contract(SubContractInvocation {
+                context: ContractContext {
+                    contract: reward_manager.clone(),
+                    fn_name: Symbol::new(env, "reserve_unpaid_reward"),
+                    args: args.clone(),
+                },
+                sub_invocations: soroban_sdk::vec![env],
+            }),
+        ]);
+
+        match env.try_invoke_contract::<(), RewardErrorCode>(
+            reward_manager,
+            &Symbol::new(env, "reserve_unpaid_reward"),
+            args,
+        ) {
+            Ok(Ok(())) => Ok(()),
+            _ => Err(HuntErrorCode::RewardDistributionFailed),
+        }
+    }
+
+    fn get_reserved_reward(
+        env: &Env,
+        reward_manager: &Address,
+        hunt_id: u64,
+        player: &Address,
+    ) -> Result<i128, HuntErrorCode> {
+        let mut args: Vec<Val> = Vec::new(env);
+        args.push_back(hunt_id.into_val(env));
+        args.push_back(player.clone().into_val(env));
+
+        match env.try_invoke_contract::<i128, RewardErrorCode>(
+            reward_manager,
+            &Symbol::new(env, "get_reserved_reward"),
+            args,
+        ) {
+            Ok(Ok(amount)) => Ok(amount),
+            _ => Err(HuntErrorCode::RewardDistributionFailed),
+        }
+    }
+
     fn distribute_player_reward(
         env: &Env,
         hunt: &mut Hunt,
@@ -2506,7 +2581,20 @@ impl HuntyCore {
         // ===================== TIER-BASED AMOUNT RESOLUTION =====================
         // Exact completion-rank tiers take precedence, followed by time tiers
         // and finally the hunt's flat per-winner amount.
-        let reward_amount = Self::resolve_reward_amount(env, hunt, progress);
+        let reserved_amount = if hunt.status == HuntStatus::Completed {
+            if let Some(reward_manager) = Storage::get_reward_manager(env) {
+                Self::get_reserved_reward(env, &reward_manager, hunt.hunt_id, &progress.player)?
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+        let reward_amount = if reserved_amount > 0 {
+            reserved_amount
+        } else {
+            Self::resolve_reward_amount(env, hunt, progress)
+        };
         // =======================================================================
         let nft_awarded = hunt.reward_config.nft_enabled;
 

@@ -40,6 +40,9 @@ impl Storage {
     const LAST_DIST_TS_KEY: soroban_sdk::Symbol = symbol_short!("LDTS");
     const POOL_KEY: soroban_sdk::Symbol = symbol_short!("POOL");
     const POOL_CFG_KEY: soroban_sdk::Symbol = symbol_short!("PCFG");
+    const RESERVED_REWARD_KEY: soroban_sdk::Symbol = symbol_short!("RWRD");
+    const RESERVED_REWARD_TOTAL_KEY: soroban_sdk::Symbol = symbol_short!("RWTOT");
+    const PROPORTIONAL_BALANCE_KEY: soroban_sdk::Symbol = symbol_short!("PBAL");
     const POOL_DEP_KEY: soroban_sdk::Symbol = symbol_short!("PDEP");
     const POOL_DST_KEY: soroban_sdk::Symbol = symbol_short!("PDST");
     const POOL_RFD_KEY: soroban_sdk::Symbol = symbol_short!("PRFD");
@@ -331,6 +334,45 @@ impl Storage {
         env.storage().persistent().get(&key).unwrap_or(0)
     }
 
+    pub fn set_proportional_balance(env: &Env, hunt_id: u64, balance: i128) {
+        let key = (Self::PROPORTIONAL_BALANCE_KEY, hunt_id);
+        env.storage().persistent().set(&key, &balance);
+    }
+
+    pub fn get_proportional_balance(env: &Env, hunt_id: u64) -> Option<i128> {
+        let key = (Self::PROPORTIONAL_BALANCE_KEY, hunt_id);
+        env.storage().persistent().get(&key)
+    }
+
+    pub fn clear_proportional_balance(env: &Env, hunt_id: u64) {
+        let key = (Self::PROPORTIONAL_BALANCE_KEY, hunt_id);
+        env.storage().persistent().remove(&key);
+    }
+
+    pub fn set_reserved_reward(env: &Env, hunt_id: u64, player: &Address, amount: i128) {
+        let key = (Self::RESERVED_REWARD_KEY, hunt_id, player.clone());
+        if amount > 0 {
+            env.storage().persistent().set(&key, &amount);
+        } else {
+            env.storage().persistent().remove(&key);
+        }
+    }
+
+    pub fn get_reserved_reward(env: &Env, hunt_id: u64, player: &Address) -> i128 {
+        let key = (Self::RESERVED_REWARD_KEY, hunt_id, player.clone());
+        env.storage().persistent().get(&key).unwrap_or(0)
+    }
+
+    pub fn set_reserved_reward_total(env: &Env, hunt_id: u64, amount: i128) {
+        let key = (Self::RESERVED_REWARD_TOTAL_KEY, hunt_id);
+        env.storage().persistent().set(&key, &amount);
+    }
+
+    pub fn get_reserved_reward_total(env: &Env, hunt_id: u64) -> i128 {
+        let key = (Self::RESERVED_REWARD_TOTAL_KEY, hunt_id);
+        env.storage().persistent().get(&key).unwrap_or(0)
+    }
+
     // ========== Reward Pool Configuration (per hunt) ==========
 
     pub fn set_pool_config(env: &Env, hunt_id: u64, config: &RewardPoolConfig) {
@@ -511,14 +553,12 @@ impl Storage {
     // ========== Reentrancy Guard ==========
 
     pub fn set_in_distribution(env: &Env, value: bool) {
-        env.storage()
-            .persistent()
-            .set(&Self::IN_DISTRIBUTION_KEY, &value);
+        env.storage().instance().set(&Self::IN_DISTRIBUTION_KEY, &value);
     }
 
     pub fn is_in_distribution(env: &Env) -> bool {
         env.storage()
-            .persistent()
+            .instance()
             .get(&Self::IN_DISTRIBUTION_KEY)
             .unwrap_or(false)
     }

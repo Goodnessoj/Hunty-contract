@@ -22,7 +22,8 @@
 //! rejected and the original funding call still completes exactly once with
 //! correct state.
 
-use crate::RewardManager;
+use crate::storage::Storage;
+use crate::{ReentrancyGuard, RewardManager};
 use soroban_sdk::{
     contract, contractimpl, testutils::Address as _, Address, Env, IntoVal, Symbol, Val, Vec,
 };
@@ -180,5 +181,24 @@ fn test_fund_reward_pool_rejects_reentrant_funding() {
             ReentrantFundingToken::reentry_was_rejected(env.clone()),
             "reentrant fund_reward_pool call should have been rejected"
         );
+    });
+}
+
+#[test]
+fn test_reentrancy_guard_uses_instance_storage_and_clears_on_drop() {
+    let env = Env::default();
+    let contract_id = env.register(RewardManager, ());
+
+    env.as_contract(&contract_id, || {
+        let guard = ReentrancyGuard::acquire(&env).unwrap();
+        assert!(Storage::is_in_distribution(&env));
+        assert!(!env
+            .storage()
+            .persistent()
+            .has(&Symbol::new(&env, "IN_DIST")));
+
+        drop(guard);
+
+        assert!(!Storage::is_in_distribution(&env));
     });
 }
