@@ -118,6 +118,8 @@ mod registration_capacity_test;
 #[cfg(test)]
 mod batch_clue_weight_test;
 #[cfg(test)]
+mod clone_hunt_aliases_test;
+#[cfg(test)]
 mod submission_recording_test;
 // Regression tests for #1255 (answer normalization).
 #[cfg(test)]
@@ -444,12 +446,17 @@ impl HuntyCore {
     }
 
     /// Secure clone path that rehashes cloned clues against the new hunt/clue context.
-    /// The creator must supply the plaintext answers for each clue in the template.
+    /// Supply one answer list per template clue, in clue order, with the primary
+    /// answer first followed by any aliases. Template hashes cannot be reused in
+    /// the new hunt, so include every alias that the clone should accept.
+    /// Each list must be non-empty and contain at most `MAX_ALIASES_PER_CLUE`
+    /// distinct normalized answers. Single-answer callers must wrap each answer
+    /// in its own list. An empty outer list retains the legacy `clone_hunt` behavior.
     pub fn clone_hunt_with_answers(
         env: Env,
         template_hunt_id: u64,
         caller: Address,
-        answers: Vec<String>,
+        answers: Vec<Vec<String>>,
     ) -> Result<u64, HuntErrorCode> {
         let template_clues =
             Storage::list_clues_for_hunt(&env, template_hunt_id, 0, MAX_CLUES_PER_HUNT);
@@ -460,7 +467,7 @@ impl HuntyCore {
         env: Env,
         template_hunt_id: u64,
         caller: Address,
-        answers: Vec<String>,
+        answers: Vec<Vec<String>>,
         template_clues: Vec<Clue>,
     ) -> Result<u64, HuntErrorCode> {
         caller.require_auth();
@@ -512,11 +519,22 @@ impl HuntyCore {
             let clue = template_clues.get(i).unwrap();
             let clue_id = Storage::next_clue_id(&env, hunt_id);
             let answer_hashes = if has_supply {
-                let answer = answers.get(i).unwrap();
-                let hash = Self::normalize_and_hash_answer(&env, hunt_id, clue_id, &answer)
-                    .map_err(HuntErrorCode::from)?;
+                let clue_answers = answers.get(i).unwrap();
+                if clue_answers.is_empty() {
+                    return Err(HuntErrorCode::InvalidAnswer);
+                }
                 let mut hashes = Vec::new(&env);
-                hashes.push_back(hash);
+                for answer in clue_answers.iter() {
+                    let hash = Self::normalize_and_hash_answer(&env, hunt_id, clue_id, &answer)
+                        .map_err(HuntErrorCode::from)?;
+                    if Self::hash_in_vec(&hashes, &hash) {
+                        continue;
+                    }
+                    if hashes.len() >= MAX_ALIASES_PER_CLUE {
+                        return Err(HuntErrorCode::TooManyAliases);
+                    }
+                    hashes.push_back(hash);
+                }
                 hashes
             } else {
                 clue.answer_hashes.clone()

@@ -53,6 +53,16 @@ contract.|
 
 As long as your editor is configured to show JavaScript/TypeScript documentation, you can pause your typing at that `|` to get a list of all exports and inline-documentation for each. It exports a separate [async](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/async_function) function for each method in the smart contract, with documentation for each generated from the comments the contract's author included in the original source code.
 
+# Cloning hunts with aliases
+
+`clone_hunt_with_answers` accepts one array per template clue, in clue order,
+with the primary answer followed by its aliases. For example,
+`answers: [["New York", "Big Apple", "NYC"], ["Paris", "City of Light"]]`.
+Include every alias the clone should accept: template hashes cannot be reused
+because each answer is hashed with the new hunt and clue IDs. Each inner array
+must contain at least one answer and at most 10 distinct normalized answers.
+For single-answer clues, wrap each answer in an array (`[["New York"], ["Paris"]]`).
+
 # Hashing answers off-chain
 
 `submit_answer_with_hash` takes `SHA256(hunt_id || clue_id || normalized_answer)`

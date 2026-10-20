@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `hunty-core`: `clone_hunt_with_answers` accepts one list of primary answer and aliases per clue (`Vec<Vec<String>>`), rehashes every distinct answer for the clone, and enforces the existing per-clue alias limit (#1249). Single-answer callers must wrap each answer in its own list.
 - `hunty-core`: `request_hint` now rejects hint requests for clues the player has already completed, returning `ClueAlreadyCompleted` instead of silently deducting the hint penalty and shifting the player's frozen leaderboard rank (#1028).
 - `hunty-core`: `get_hunt_leaderboard_window` reads only the requested slice of the player registration index instead of loading every player and each one's progress record, and `get_hunt_leaderboard` reports `total_players` from the registration counter. Paging a large hunt is now `O(window_size)` and stays inside the per-transaction footprint budget (#1041).
 - `reward-manager`: `freeze_pool` now records who froze a pool (`RewardPoolConfig::frozen_by`, also exposed on `get_reward_pool`), and `unfreeze_pool` only lets the admin lift an admin-issued freeze. A creator can no longer undo an incident freeze, and a creator freeze call cannot downgrade an existing admin freeze (#1077). A frozen pool that carries no recorded freezer (freeze state written before `frozen_by` existed) now fails closed: only the admin can lift it (#1077).

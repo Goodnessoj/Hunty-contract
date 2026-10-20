@@ -466,12 +466,17 @@ pub fn clone_hunt(env: Env, template_hunt_id: u64, caller: Address) -> Result<u6
 #### `clone_hunt_with_answers`
 
 Secure clone path that rehashes cloned clues against the new hunt/clue context.
-The creator must supply the plaintext answers for each clue in the template.
+Supply one answer list per template clue, in clue order, with the primary
+answer first followed by any aliases. Template hashes cannot be reused in
+the new hunt, so include every alias that the clone should accept.
+Each list must be non-empty and contain at most `MAX_ALIASES_PER_CLUE`
+distinct normalized answers. Single-answer callers must wrap each answer
+in its own list. An empty outer list retains the legacy `clone_hunt` behavior.
 
 **Signature:**
 
 ```rust
-pub fn clone_hunt_with_answers(env: Env, template_hunt_id: u64, caller: Address, answers: Vec<String>) -> Result<u64, HuntErrorCode>
+pub fn clone_hunt_with_answers(env: Env, template_hunt_id: u64, caller: Address, answers: Vec<Vec<String>>) -> Result<u64, HuntErrorCode>
 ```
 
 **Parameters:**
@@ -479,7 +484,7 @@ pub fn clone_hunt_with_answers(env: Env, template_hunt_id: u64, caller: Address,
 - `env: Env`
 - `template_hunt_id: u64`
 - `caller: Address`
-- `answers: Vec<String>`
+- `answers: Vec<Vec<String>>`
 
 **Returns:** `Result<u64, HuntErrorCode>`
 
