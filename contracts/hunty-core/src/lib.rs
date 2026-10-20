@@ -208,13 +208,6 @@ impl HuntyCore {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    fn get_player_total_completed_hunts(env: &Env, player: &Address) -> u32 {
-        // This would ideally use a global player stats storage
-        // For now, we can implement a simple version or extend Storage
-        Storage::get_player_completed_hunt_count(env, player)
-    }
-
     /// Pauses all player operations (registrations, answers, rewards) globally.
     pub fn pause_contract(env: Env, admin: Address) -> Result<(), HuntErrorCode> {
         Self::require_admin(&env, &admin)?;
@@ -3787,7 +3780,6 @@ impl HuntyCore {
         )
     }
 
-    #[allow(dead_code)]
     fn validate_attempt_tracking(
         env: &Env,
         hunt: &Hunt,
@@ -3806,20 +3798,6 @@ impl HuntyCore {
         }
         progress.clue_last_attempts.set(clue_id, current_time);
         Ok(())
-    }
-
-    #[allow(dead_code)]
-    fn completion_rank(env: &Env, hunt_id: u64) -> u32 {
-        let players = Storage::get_hunt_players(env, hunt_id);
-        let mut completed_players = 0u32;
-        for i in 0..players.len() {
-            // SAFETY: i is within the vector bounds established by the enclosing loop
-            let progress = players.get(i).unwrap();
-            if progress.is_completed {
-                completed_players += 1;
-            }
-        }
-        completed_players.saturating_add(1)
     }
 
     fn validate_submission_timestamp(
@@ -4108,57 +4086,6 @@ impl HuntyCore {
             finished,
             queried_at,
         })
-    }
-
-    /// Picks the index of the best entry not in `selected`. Order: score desc, then completed_at asc (0 = last).
-    #[allow(dead_code)]
-    fn leaderboard_best_index(
-        entries: &Vec<(Address, u32, u64, bool)>,
-        selected: &Vec<u32>,
-    ) -> Option<u32> {
-        let n = entries.len();
-        let mut best_idx: Option<u32> = None;
-        for i in 0..n {
-            let mut taken = false;
-            for j in 0..selected.len() {
-                // SAFETY: j is in [0, selected.len()) — loop bound guarantees existence
-                if selected.get(j).unwrap() == i {
-                    taken = true;
-                    break;
-                }
-            }
-            if taken {
-                continue;
-            }
-            // SAFETY: i is within the vector bounds established by the enclosing loop
-            let (_, score, completed_at, _) = entries.get(i).unwrap();
-            let better = match best_idx {
-                None => true,
-                Some(bi) => {
-                    // SAFETY: bi was set from a previously validated index in this vec
-                    let (_, b_score, b_completed_at, _) = entries.get(bi).unwrap();
-                    let a_val = if completed_at == 0 {
-                        u64::MAX
-                    } else {
-                        completed_at
-                    };
-                    let b_val = if b_completed_at == 0 {
-                        u64::MAX
-                    } else {
-                        b_completed_at
-                    };
-                    match score.cmp(&b_score) {
-                        core::cmp::Ordering::Greater => true,
-                        core::cmp::Ordering::Equal => a_val < b_val,
-                        core::cmp::Ordering::Less => false,
-                    }
-                }
-            };
-            if better {
-                best_idx = Some(i);
-            }
-        }
-        best_idx
     }
 
     fn update_leaderboard_index(env: &Env, progress: &PlayerProgress) {
@@ -4718,29 +4645,5 @@ impl HuntyCore {
     ) -> crate::types::RateLimitStatus {
         let now = env.ledger().timestamp();
         rate_limit::RateLimiter::get_status(&env, &creator, now)
-    }
-
-    #[cfg(debug_assertions)]
-    #[allow(dead_code)]
-    fn sync_hunt_clue_counts(env: &Env, hunt_id: u64, hunt: &Hunt) {
-        let clues = Storage::list_clues_for_hunt(env, hunt_id, 0, u32::MAX);
-        let mut total = 0u32;
-        let mut required = 0u32;
-        for i in 0..clues.len() {
-            // SAFETY: i is within the vector bounds established by the enclosing loop
-            let clue = clues.get(i).unwrap();
-            total += 1;
-            if clue.is_required {
-                required += 1;
-            }
-        }
-        assert_eq!(
-            hunt.total_clues, total,
-            "total_clues drifted for hunt {hunt_id}"
-        );
-        assert_eq!(
-            hunt.required_clues, required,
-            "required_clues drifted for hunt {hunt_id}"
-        );
     }
 }
