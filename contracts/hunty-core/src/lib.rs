@@ -106,6 +106,8 @@ mod incorrect_answer_outcome_test;
 mod invite_registration_deadline_test;
 #[cfg(test)]
 mod list_hunts_test;
+#[cfg(test)]
+mod search_hunts_test;
 // Regression tests for #1253 (hunt categories must not keep duplicates).
 #[cfg(test)]
 mod hunt_categories_dedup_test;
@@ -1634,7 +1636,10 @@ impl HuntyCore {
 
         let last_start = haystack_len - needle_len;
         for start in 0..=last_start {
-            if haystack_buf[start..start + needle_len] == needle_buf[..needle_len] {
+            // Fold ASCII case only; non-ASCII UTF-8 bytes must still match exactly.
+            if haystack_buf[start..start + needle_len]
+                .eq_ignore_ascii_case(&needle_buf[..needle_len])
+            {
                 return true;
             }
         }
